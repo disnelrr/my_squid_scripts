@@ -18,15 +18,10 @@ PACKS = {
     # por defecto, 32, 160 y 650 MB
     'default': [33554432, 165675008, 660602880],
     # informaticos, 60, 300 y 1024 MB
-    'informaticos': [62914560, 314572800, 1073741824],
-    'mini': [5242880, 52428800, 524288000],
-    # 100, 400, 1200
-    'directores': [104857600, 419430400, 1258291200],
+    'nombre_grupo': [62914560, 314572800, 1073741824],
 }
 PACKS_X_USUARIO = {
-    'karel.auld': 'informaticos',
-    'disnel': 'mini',
-    'enrique.aguilar': 'directores',
+    'nombre.usuario': 'nombre_grupo',
 }
 # Por debajo de este indice la couta se resetea en cero
 # Por encima del mismo se resta de lo consumido la cuota
