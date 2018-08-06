@@ -1,67 +1,26 @@
 #!/usr/bin/python
 # -*- coding: iso-8859-15 -*-
 
-import re, sqlite3, sys, os, smtplib, subprocess, ldap
+import re, sqlite3, sys, os, smtplib, subprocess, ldap, ConfigParser
 from datetime import *
 from email.mime.text import MIMEText
 
-# VARIABLES
-
-# Control de cuotas personalizadas
-# Definicion de paquetes con valores predefinidos segun
-# el tipo de usuario. Cada paquete contiene los valores de
-# cuota diaria, semanal y mensual. La cuota se expresa en bytes
-# Ayuda: se debe multiplicar el valor en MB por 1048576
-# Por ejemplo: 32 MB = 33554432
-PACKS = {
-    # 'nombre': [diaria, semanal, mensual]
-    # por defecto, 32, 160 y 650 MB
-    'default': [33554432, 165675008, 660602880],
-    # informaticos, 60, 300 y 1024 MB
-    'nombre_grupo': [62914560, 314572800, 1073741824],
-}
-PACKS_X_USUARIO = {
-    'nombre.usuario': 'nombre_grupo',
-}
-# Por debajo de este indice la couta se resetea en cero
-# Por encima del mismo se resta de lo consumido la cuota
-# diaria y se comienza el nuevo periodo con este valor
-# Por ejemplo:
-# Consumo diario: 35 MB
-# 35 / 32 = 1.09 > indice de consumo
-# Al proximo dia el usuario comienza con:
-# 35 - 32 = 3 MB consumidos
-INDICE_SOBRECONSUMO = 1.05
-# Lista de usuarios excluidos del control de cuota
-# Se deben separar por espacio
-EXCLUDED = "maikel.pino suleidis.infante mgonzalez"
-# Indica si los fines de semana o fuera del horario laboral 
-# se dejan de controlar las cuotas
-# True: se controlan solo de lunes a viernes de 8am a 5pm
-# False: se controlan las cuotas todos los dias de semana a toda hora
-AL_FULL = True
-
-# Ficheros
 LOGS = sys.argv[1]
-BD_FILE = 'inetcons.db'
-IPS_OVERQUOTA = '/etc/squid3/listas/overquota'
-IPS_OVERQUOTA_REMOTE = '/etc/squid3/listas/firewall/overquota'
-IPTRANS_BD = '/etc/squid3/listas/firewall/iptrans.db'
-IP_OQ_BASE = '172.26.7.'
-FEEDS_FILE = '/etc/squid3/feeds/consumos/inetcons.csv'
+CONFIG = '/etc/squid3/scripts_conf/cuotas_db_config.ini'
 
-# LDAP 
-LDAP_URI = ''
-ADMIN_DN = ''
-ADMIN_PASSWD = ''
-OVERQUOTA_GROUP = ''
+# Retorna el valor de la variable v en la configuracion
+def get_option(section, option):
+    if option.isupper():
+        option = option.lower()
+    config = ConfigParser.ConfigParser()
+    config.read(CONFIG)
+    return config.get(section, option)
 
-# ============================================
 
 # Incializa la base de datos. Retorna en una tupla el objeto conexion
 # y el cursor para el resto de las operaciones
 def inicializar_bd():
-    conn = sqlite3.connect(BD_FILE)
+    conn = sqlite3.connect(get_option('FICHEROS', 'BD_FILE'))
     c = conn.cursor()
     try:
         c.execute("SELECT * FROM inetcons")
@@ -101,9 +60,9 @@ def format_bytes(cons):
 # action = 'ADD' adiciona al usuario
 # cualquier otro valor lo elimina del grupo
 def update_user_in_group(user, action):
-    l = ldap.initialize(LDAP_URI)
-    l.simple_bind_s(ADMIN_DN, ADMIN_PASSWD)
-    dn = OVERQUOTA_GROUP
+    l = ldap.initialize(get_option('LDAP', 'LDAP_URI'))
+    l.simple_bind_s(get_option('LDAP', 'ADMIN_DN'), get_option('LDAP', 'ADMIN_PASSWD'))
+    dn = get_option('LDAP', 'OVERQUOTA_GROUP')
     if action == 'ADD':
         try:
             l.modify_s(dn, [(ldap.MOD_ADD, 'memberUid', user), ])
@@ -120,16 +79,19 @@ def update_user_in_group(user, action):
 
 # Obtiene la cuota del usuario correspondiente y la devuelve en una tupla
 def get_user_quota(user):
-    cd, cs, cm = PACKS['default']
-    if user in PACKS_X_USUARIO:
-        cd, cs, cm = PACKS[PACKS_X_USUARIO[user]]
+    cd, cs, cm = [int(i) for i in get_option('PACKS', 'default').split()]
+    try:
+        pack_name = get_option('PACKS_X_USUARIO', user)
+        cd, cs, cm = [int(i) for i in get_option('PACKS', pack_name).split()]
+    except:
+        pass
     return (cd, cs, cm)
 
 # Coloca al usuario en el grupo overquota en caso de que sobrepase
 # el consumo diario, semanal o mensual
 def update_overquota_user(user, data, dataw, datam):
     cd, cs, cm = get_user_quota(user)
-    if not user in EXCLUDED.split():
+    if not user in get_option('OTROS', 'EXCLUDED').split():
         if data >= cd or dataw >= cs or datam >= cm:
             update_user_in_group(user, 'ADD')
         else:
@@ -176,17 +138,17 @@ def generar_fichero_reporte(c):
     rf.close()
 
 
-def registrar_consumo_feeds(user, data, dataw, datam, elapsed):
-    feed_line = user + ',' + str(data) + ',' + str(dataw) + ',' + str(datam) + ',' + str(elapsed) + '\n'
-    if not os.access(FEEDS_FILE, os.F_OK):
-        feeds_file = open(FEEDS_FILE, 'w')
-        feeds_file.write('user,data,dataw,datam,elapsed\n')
-        feeds_file.write(feed_line)
-        feeds_file.close()
-    else:
-        feeds_file = open(FEEDS_FILE, 'a')
-        feeds_file.write(feed_line)
-        feeds_file.close()
+#def registrar_consumo_feeds(user, data, dataw, datam, elapsed):
+    #feed_line = user + ',' + str(data) + ',' + str(dataw) + ',' + str(datam) + ',' + str(elapsed) + '\n'
+    #if not os.access(FEEDS_FILE, os.F_OK):
+        #feeds_file = open(FEEDS_FILE, 'w')
+        #feeds_file.write('user,data,dataw,datam,elapsed\n')
+        #feeds_file.write(feed_line)
+        #feeds_file.close()
+    #else:
+        #feeds_file = open(FEEDS_FILE, 'a')
+        #feeds_file.write(feed_line)
+        #feeds_file.close()
 
 # Retorna en un diccionario los consumos correspondientes
 # a cada usuario (el usuario es la clave), el valor es una
@@ -213,14 +175,14 @@ def resetear_consumos(c):
             dataw = consumos[user][1]
             datam = consumos[user][2]
             if dia_mes_actual == 1:
-                if datam / cm > INDICE_SOBRECONSUMO and datam / cm < 2:
+                if datam / cm > float(get_option('OTROS', 'INDICE_SOBRECONSUMO')) and datam / cm < 2:
                     dat = (datam - cm, user)
                 c.execute("UPDATE inetcons SET datam = ? WHERE user = ?", dat)
             if dia_semana_actual == 0:
-                if dataw / cs > INDICE_SOBRECONSUMO and dataw / cs < 2:
+                if dataw / cs > float(get_option('OTROS', 'INDICE_SOBRECONSUMO')) and dataw / cs < 2:
                     dat = (dataw - cs, user)
                 c.execute("UPDATE inetcons SET dataw = ? WHERE user = ?", dat)
-            if data / cd > INDICE_SOBRECONSUMO and data / cd < 2:
+            if data / cd > float(get_option('OTROS', 'INDICE_SOBRECONSUMO')) and data / cd < 2:
                 dat = (data - cd, user)
             c.execute("UPDATE inetcons SET data = ? WHERE user = ?", dat)
 
@@ -245,7 +207,7 @@ def obtener_consumos_desde_logs(c):
                     rdatam = record[3] + campos['data']
                     relapsed = record[4] + campos['elapsed']
                     update_overquota_user(campos['user'], rdata, rdataw, rdatam)
-                    registrar_consumo_feeds(campos['user'], rdata, rdataw, rdatam, relapsed)
+                    #registrar_consumo_feeds(campos['user'], rdata, rdataw, rdatam, relapsed)
                     cons = (rdata, rdataw, rdatam, relapsed, campos['user'])
                     c.execute("UPDATE inetcons SET data = ?, dataw = ?, datam = ?, elapsed = ? WHERE user = ?", cons)
                 except StopIteration:
@@ -271,7 +233,7 @@ resetear_consumos(c)
 
 # Ejecutar el script en dependencia del valor de la variable AL_FULL
 dia_mes_actual, dia_semana_actual, hora_actual, minuto_actual = obtener_hora_actual()
-if AL_FULL and (dia_semana_actual > 4 or hora_actual < 8 or hora_actual >= 17):
+if get_option('OTROS', 'AL_FULL') and (dia_semana_actual > 4 or hora_actual < 8 or hora_actual >= 17):
     sys.exit(0)
 else:
     obtener_consumos_desde_logs(c)
